@@ -1,15 +1,23 @@
 """Supabase JWT authentication for the geopo API.
 
-Supabase issues HS256-signed JWTs after a successful Google OAuth handshake.
-This module verifies those tokens server-side and exposes a FastAPI
-dependency, :func:`require_user`, that every protected endpoint can declare.
+Supabase issues JWTs after a successful Google OAuth handshake. New
+projects (post the *JWT Signing Keys* rollout) sign with **ES256** by
+default and publish the public key at
+``${SUPABASE_URL}/auth/v1/.well-known/jwks.json``. Older projects still
+use **HS256** with a shared secret. This module supports both:
+
+* If ``SUPABASE_URL`` is set we use :class:`PyJWKClient` against the
+  JWKS endpoint — that covers ES256 / RS256 / HS256 alike and adapts
+  automatically if Supabase rotates its keys.
+* Otherwise we fall back to verifying HS256 with
+  ``SUPABASE_JWT_SECRET``.
 
 Design notes
 ------------
-* **Dev fallback.** When :pyattr:`Settings.supabase_jwt_secret` is empty the
-  verifier is disabled and every request is treated as the local ``dev``
-  user. This keeps ``./start.sh`` working on a fresh checkout without any
-  Supabase setup. The startup log line makes the mode obvious.
+* **Dev fallback.** When *both* ``SUPABASE_URL`` and ``SUPABASE_JWT_SECRET``
+  are empty the verifier is disabled and every request is treated as the
+  local ``dev`` user. This keeps ``./start.sh`` working on a fresh checkout
+  without any Supabase setup. The startup log line makes the mode obvious.
 * **Allowlist.** :pyattr:`Settings.allowed_emails` is a comma-separated list.
   If non-empty, the email on the validated JWT must match (case-insensitive)
   or the request is rejected with 403. Empty allowlist → anyone with a
@@ -26,6 +34,7 @@ from functools import lru_cache
 import jwt
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from jwt import PyJWKClient
 
 from config import get_settings
 
@@ -62,11 +71,46 @@ def _allowed_emails() -> frozenset[str]:
 
 
 def _auth_enabled() -> bool:
-    return bool(get_settings().supabase_jwt_secret)
+    s = get_settings()
+    return bool(s.supabase_url or s.supabase_jwt_secret)
+
+
+# All Supabase user-facing tokens carry ``aud=authenticated``.
+_AUDIENCE = "authenticated"
+# Algorithms we accept. Listing all three lets a single deployment serve
+# both legacy HS256 projects and modern ES256/RS256 projects without
+# config changes.
+_ALGORITHMS = ["ES256", "RS256", "HS256"]
+
+
+@lru_cache(maxsize=1)
+def _jwks_client() -> PyJWKClient | None:
+    """Return a cached :class:`PyJWKClient` pointed at Supabase's JWKS.
+
+    Returns ``None`` when no ``SUPABASE_URL`` is configured — in that
+    case the verifier falls back to HS256 with the static secret.
+    PyJWT's client maintains its own ~5-minute in-memory key cache, so
+    we only hit Supabase on cold start and when keys rotate.
+    """
+    base = (get_settings().supabase_url or "").strip().rstrip("/")
+    if not base:
+        return None
+    jwks_url = f"{base}/auth/v1/.well-known/jwks.json"
+    logger.info("JWT verifier: using JWKS at %s", jwks_url)
+    return PyJWKClient(jwks_url, cache_keys=True, lifespan=300)
 
 
 def _decode(token: str) -> dict:
-    """Verify and decode a Supabase HS256 JWT.
+    """Verify and decode a Supabase JWT.
+
+    Strategy:
+        * If a JWKS client is configured (``SUPABASE_URL`` set), look up
+          the signing key by the token's ``kid`` and verify against the
+          algorithm in the token header. This handles ES256/RS256 from
+          new Supabase projects and HS256 from legacy ones (provided
+          Supabase exposes it on JWKS).
+        * Otherwise fall back to HS256 with the static
+          ``SUPABASE_JWT_SECRET``.
 
     Raises:
         HTTPException: 401 with the underlying error reason for invalid,
@@ -75,12 +119,21 @@ def _decode(token: str) -> dict:
             the operator having to read response bodies in devtools.
     """
     try:
+        client = _jwks_client()
+        if client is not None:
+            signing_key = client.get_signing_key_from_jwt(token).key
+            return jwt.decode(
+                token,
+                signing_key,
+                algorithms=_ALGORITHMS,
+                audience=_AUDIENCE,
+                options={"require": ["exp", "sub"]},
+            )
         return jwt.decode(
             token,
             get_settings().supabase_jwt_secret,
             algorithms=["HS256"],
-            # All user-facing Supabase JWTs carry ``aud=authenticated``.
-            audience="authenticated",
+            audience=_AUDIENCE,
             options={"require": ["exp", "sub"]},
         )
     except jwt.ExpiredSignatureError as exc:
@@ -154,18 +207,20 @@ async def require_user(
 def log_auth_mode() -> None:
     """Log a single startup banner so the auth posture is unambiguous."""
     if _auth_enabled():
+        mode = "JWKS (asymmetric)" if _jwks_client() is not None else "HS256 (legacy shared secret)"
         n = len(_allowed_emails())
         if n:
-            logger.info("Auth: Supabase JWT verification ENABLED — %d allowed email(s)", n)
+            logger.info("Auth: Supabase JWT verification ENABLED via %s — %d allowed email(s)", mode, n)
         else:
             logger.warning(
-                "Auth: Supabase JWT verification ENABLED but ALLOWED_EMAILS is empty — "
-                "any valid Supabase user can access this API."
+                "Auth: Supabase JWT verification ENABLED via %s but ALLOWED_EMAILS is empty — "
+                "any valid Supabase user can access this API.",
+                mode,
             )
     else:
         logger.warning(
-            "Auth: DISABLED (SUPABASE_JWT_SECRET unset) — every request is treated as dev user. "
-            "Do NOT expose this deployment to the internet."
+            "Auth: DISABLED (no SUPABASE_URL or SUPABASE_JWT_SECRET configured) — every request "
+            "is treated as dev user. Do NOT expose this deployment to the internet."
         )
 
 
