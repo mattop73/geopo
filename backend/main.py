@@ -23,9 +23,9 @@ import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from database import init_db
@@ -84,6 +84,28 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Catch-all exception handler: every unhandled error in an /api/* route
+# becomes a single, clearly-tagged log line with the full traceback. The
+# default FastAPI behavior buries the traceback under uvicorn's "Exception
+# in ASGI application" framing, which makes Railway logs unscannable when
+# many endpoints fail at once. The error type is also surfaced to the
+# client in ``detail`` (no leaked internals — just the class name) so the
+# browser console gets a hint without needing server access.
+@app.exception_handler(Exception)
+async def _unhandled_exception(request: Request, exc: Exception) -> JSONResponse:
+    logger.exception(
+        "UNHANDLED %s %s -> %s: %s",
+        request.method,
+        request.url.path,
+        type(exc).__name__,
+        exc,
+    )
+    return JSONResponse(
+        status_code=500,
+        content={"detail": f"Internal error: {type(exc).__name__}: {exc}"},
+    )
+
 
 # Public, unauthenticated. Used as Railway's healthcheck target. Also
 # reports the auth posture so the operator can confirm in one HTTP call
