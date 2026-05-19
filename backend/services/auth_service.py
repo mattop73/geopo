@@ -34,7 +34,7 @@ from functools import lru_cache
 import jwt
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from jwt import PyJWKClient
+from jwt import PyJWKClient, PyJWKClientError
 
 from config import get_settings
 
@@ -142,11 +142,12 @@ def _decode(token: str) -> dict:
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Session expired — please sign in again.",
         ) from exc
-    except jwt.InvalidTokenError as exc:
-        # Peek at the unverified header/claims to help diagnose mismatches
-        # (wrong secret vs wrong audience vs wrong algorithm). Never trust
-        # these values for auth decisions — they're decoded without
-        # signature verification on purpose, purely for the log line.
+    except (jwt.InvalidTokenError, PyJWKClientError) as exc:
+        # ``PyJWKClientError`` is what gets raised when the JWKS fetch
+        # itself fails (network blip, missing ``kid``, unreachable JWKS
+        # endpoint) — it does NOT inherit from ``InvalidTokenError`` so
+        # we must catch it explicitly. Without this branch the exception
+        # propagates as a 500, exactly the bug we hit on first deploy.
         hint = ""
         try:
             header = jwt.get_unverified_header(token)
@@ -157,10 +158,18 @@ def _decode(token: str) -> dict:
             )
         except Exception:  # noqa: BLE001 — best-effort diagnostic only
             pass
-        logger.warning("JWT rejected: %s%s", exc, hint)
+        logger.warning("JWT rejected (%s): %s%s", type(exc).__name__, exc, hint)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=f"Invalid auth token: {exc}",
+        ) from exc
+    except Exception as exc:  # noqa: BLE001
+        # Catch-all so any future PyJWT/cryptography surprise still ends
+        # up as a clean 401 with a server-side log entry, never a 500.
+        logger.exception("JWT verification crashed: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=f"Auth check failed: {type(exc).__name__}",
         ) from exc
 
 
