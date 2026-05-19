@@ -30,7 +30,7 @@ from fastapi.staticfiles import StaticFiles
 from database import init_db
 from routers import commodities, llm, news, podcasts, polymarket, themes
 from scheduler import scheduler, start_scheduler
-from services.auth_service import log_auth_mode, require_user
+from services.auth_service import log_auth_mode, log_provider_keys, require_user
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -39,6 +39,7 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     log_auth_mode()
+    log_provider_keys()
     await init_db()
     start_scheduler()
     from database import AsyncSessionLocal

@@ -1,7 +1,9 @@
 import logging
+import socket
 from pathlib import Path
 
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
+from sqlalchemy.engine.url import URL, make_url
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
 
 from config import get_settings
@@ -10,39 +12,90 @@ logger = logging.getLogger(__name__)
 settings = get_settings()
 
 
-def _resolve_async_db_url() -> str:
-    """Return the async SQLAlchemy URL.
+def _resolve_async_db_url() -> URL:
+    """Return the async SQLAlchemy URL as a :class:`URL` object.
 
     Precedence:
-        1. ``settings.database_url`` if set — normalized so a raw Supabase
-           ``postgresql://`` URL works as-is (we inject ``+asyncpg`` and
-           ``ssl=require``).
+        1. ``settings.database_url`` if set — normalized via SQLAlchemy's
+           ``make_url`` parser (which handles percent-encoded passwords,
+           IPv6 brackets, etc.) and rewritten to use the asyncpg driver
+           with ``ssl=require``.
         2. Legacy local SQLite at ``settings.db_path`` — keeps dev boxes
            that haven't migrated to Postgres yet running unchanged.
     """
     raw = (settings.database_url or "").strip()
     if not raw:
-        return f"sqlite+aiosqlite:///{settings.db_path}"
+        return make_url(f"sqlite+aiosqlite:///{settings.db_path}")
 
-    url = raw
-    # Supabase shows ``postgresql://`` — convert to the async driver.
-    if url.startswith("postgresql://"):
-        url = "postgresql+asyncpg://" + url[len("postgresql://"):]
-    elif url.startswith("postgres://"):  # heroku-style alias
-        url = "postgresql+asyncpg://" + url[len("postgres://"):]
+    url = make_url(raw)
 
-    # Force TLS for any Postgres connection. asyncpg uses ``ssl=`` (not
-    # ``sslmode=`` like psycopg2). Both forms are tolerated here.
-    if url.startswith("postgresql+asyncpg://") and "ssl=" not in url and "sslmode=" not in url:
-        sep = "&" if "?" in url else "?"
-        url = f"{url}{sep}ssl=require"
+    # Force the asyncpg driver. ``postgres://`` is the Heroku-style alias.
+    if url.drivername in ("postgres", "postgresql"):
+        url = url.set(drivername="postgresql+asyncpg")
+
+    # Force TLS for any Postgres connection. asyncpg expects ``ssl=`` in
+    # the query string (psycopg2 uses ``sslmode=``). Don't overwrite if
+    # the user already set one explicitly.
+    if url.drivername == "postgresql+asyncpg":
+        q = dict(url.query)
+        if "ssl" not in q and "sslmode" not in q:
+            q["ssl"] = "require"
+            url = url.set(query=q)
 
     return url
 
 
-ASYNC_DB_URL = _resolve_async_db_url()
-_dialect = ASYNC_DB_URL.split(":", 1)[0]
-logger.info("Database dialect=%s", _dialect)
+ASYNC_DB_URL_OBJ: URL = _resolve_async_db_url()
+# String form is what create_async_engine wants, but we keep the URL object
+# around so the diagnostic below can read host/port/user without re-parsing.
+ASYNC_DB_URL: str = ASYNC_DB_URL_OBJ.render_as_string(hide_password=False)
+
+
+def _log_db_target(url: URL) -> None:
+    """Print a redacted summary of where we're connecting + DNS sanity check.
+
+    The single most common reason a Supabase+Railway boot fails is that the
+    hostname stored in ``DATABASE_URL`` is not what the operator thinks it
+    is (typo, wrong region, copy-paste lost a char, env var has trailing
+    whitespace, etc.). Logging it explicitly — alongside a ``getaddrinfo``
+    probe — turns a cryptic ``gaierror`` traceback into a one-line answer.
+    """
+    if url.drivername.startswith("sqlite"):
+        logger.info("DB target: sqlite at %s", url.database)
+        return
+
+    host = url.host or "<none>"
+    port = url.port or "<default>"
+    user = url.username or "<none>"
+    logger.info(
+        "DB target: driver=%s host=%s port=%s user=%s db=%s query=%s",
+        url.drivername, host, port, user, url.database, dict(url.query),
+    )
+
+    if not url.host:
+        logger.error(
+            "DB target has NO host — the DATABASE_URL likely has an unencoded "
+            "special character in the password that broke URL parsing. "
+            "Percent-encode @ # ? & = / : + $ %% in the password, or "
+            "regenerate the Supabase password to be purely alphanumeric."
+        )
+        return
+
+    try:
+        infos = socket.getaddrinfo(url.host, url.port or 5432, type=socket.SOCK_STREAM)
+        addrs = sorted({info[4][0] for info in infos})
+        logger.info("DNS: %s resolves to %s", url.host, addrs)
+    except socket.gaierror as exc:
+        logger.error(
+            "DNS lookup FAILED for %s: %s. The hostname is either wrong or "
+            "unreachable from this container. Re-copy the Session pooler URI "
+            "from Supabase Dashboard → Project Settings → Database → "
+            "Connection string (tab 'Session pooler', port 5432).",
+            url.host, exc,
+        )
+
+
+_log_db_target(ASYNC_DB_URL_OBJ)
 
 engine = create_async_engine(ASYNC_DB_URL, echo=False, pool_pre_ping=True)
 
@@ -80,15 +133,21 @@ def _run_alembic_upgrade() -> None:
 def _sync_url_for_alembic(async_url: str) -> str:
     """Map our runtime async URL to the sync driver Alembic needs.
 
-    asyncpg → psycopg2 (Postgres) / aiosqlite → pysqlite (SQLite).
+    asyncpg → psycopg2 (Postgres) / aiosqlite → pysqlite (SQLite). Uses
+    :func:`make_url` so the password's percent-encoding and any query
+    params (e.g. ``ssl=require``) survive the rewrite cleanly.
     """
-    if async_url.startswith("postgresql+asyncpg://"):
-        sync = "postgresql+psycopg2://" + async_url[len("postgresql+asyncpg://"):]
+    url = make_url(async_url)
+    if url.drivername == "postgresql+asyncpg":
+        url = url.set(drivername="postgresql+psycopg2")
         # psycopg2 wants ``sslmode``, not ``ssl``.
-        return sync.replace("ssl=require", "sslmode=require")
-    if async_url.startswith("sqlite+aiosqlite:///"):
-        return "sqlite+pysqlite:///" + async_url[len("sqlite+aiosqlite:///"):]
-    return async_url
+        q = dict(url.query)
+        if "ssl" in q and "sslmode" not in q:
+            q["sslmode"] = q.pop("ssl")
+            url = url.set(query=q)
+    elif url.drivername == "sqlite+aiosqlite":
+        url = url.set(drivername="sqlite+pysqlite")
+    return url.render_as_string(hide_password=False)
 
 
 async def init_db():

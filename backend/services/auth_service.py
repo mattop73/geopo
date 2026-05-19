@@ -70,7 +70,9 @@ def _decode(token: str) -> dict:
 
     Raises:
         HTTPException: 401 with the underlying error reason for invalid,
-            expired, or wrong-audience tokens.
+            expired, or wrong-audience tokens. The reason is also logged
+            server-side so Railway logs surface the root cause without
+            the operator having to read response bodies in devtools.
     """
     try:
         return jwt.decode(
@@ -82,11 +84,27 @@ def _decode(token: str) -> dict:
             options={"require": ["exp", "sub"]},
         )
     except jwt.ExpiredSignatureError as exc:
+        logger.warning("JWT rejected: expired (%s)", exc)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Session expired — please sign in again.",
         ) from exc
     except jwt.InvalidTokenError as exc:
+        # Peek at the unverified header/claims to help diagnose mismatches
+        # (wrong secret vs wrong audience vs wrong algorithm). Never trust
+        # these values for auth decisions — they're decoded without
+        # signature verification on purpose, purely for the log line.
+        hint = ""
+        try:
+            header = jwt.get_unverified_header(token)
+            claims = jwt.decode(token, options={"verify_signature": False})
+            hint = (
+                f" | token alg={header.get('alg')} kid={header.get('kid')} "
+                f"aud={claims.get('aud')} iss={claims.get('iss')}"
+            )
+        except Exception:  # noqa: BLE001 — best-effort diagnostic only
+            pass
+        logger.warning("JWT rejected: %s%s", exc, hint)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=f"Invalid auth token: {exc}",
@@ -149,3 +167,22 @@ def log_auth_mode() -> None:
             "Auth: DISABLED (SUPABASE_JWT_SECRET unset) — every request is treated as dev user. "
             "Do NOT expose this deployment to the internet."
         )
+
+
+def log_provider_keys() -> None:
+    """Log which external-API keys the process actually has at boot.
+
+    We log presence only (never the secret itself) so the user can verify
+    Railway/Supabase env vars landed in the container without leaking
+    anything to log aggregators.
+    """
+    s = get_settings()
+    flags = {
+        "ANTHROPIC_API_KEY": bool(s.anthropic_api_key),
+        "OPENAI_API_KEY": bool(s.openai_api_key),
+        "NEWSAPI_KEY": bool(s.newsapi_key),
+        "GUARDIAN_API_KEY": bool(s.guardian_api_key),
+        "NYT_API_KEY": bool(s.nyt_api_key),
+    }
+    summary = ", ".join(f"{k}={'set' if v else 'MISSING'}" for k, v in flags.items())
+    logger.info("Provider keys: %s", summary)
