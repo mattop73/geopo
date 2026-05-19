@@ -125,7 +125,16 @@ def _run_alembic_upgrade() -> None:
     # Make sure the URL matches the current settings even if alembic.ini
     # drifts. Convert the async URL we use at runtime to the sync form
     # Alembic expects (psycopg2 for Postgres, pysqlite for SQLite).
-    cfg.set_main_option("sqlalchemy.url", _sync_url_for_alembic(ASYNC_DB_URL))
+    #
+    # ``%`` must be escaped as ``%%`` because alembic's ``Config`` is backed
+    # by ``configparser`` with ``BasicInterpolation``, which treats a bare
+    # ``%`` as the start of a ``%(name)s`` substitution. Postgres URLs that
+    # percent-encode special chars in the password (``%5E`` for ``^``,
+    # ``%40`` for ``@`` etc.) would otherwise raise ``invalid interpolation
+    # syntax``. ``get_main_option`` un-escapes ``%%`` → ``%`` on read, so
+    # the URL that actually reaches SQLAlchemy is byte-identical.
+    sync_url = _sync_url_for_alembic(ASYNC_DB_URL)
+    cfg.set_main_option("sqlalchemy.url", sync_url.replace("%", "%%"))
     command.upgrade(cfg, "head")
     logger.info("Alembic migrations up to date")
 

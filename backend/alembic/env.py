@@ -33,8 +33,14 @@ if config.config_file_name is not None:
 settings = get_settings()
 # Use whatever runtime DB we're pointed at (SQLite locally, Supabase Postgres
 # in prod). ``_sync_url_for_alembic`` swaps the async driver for the sync
-# driver Alembic needs (psycopg2 / pysqlite).
-config.set_main_option("sqlalchemy.url", _sync_url_for_alembic(ASYNC_DB_URL))
+# driver Alembic needs (psycopg2 / pysqlite). ``%`` → ``%%`` escape is
+# required because Alembic's Config is backed by configparser with
+# BasicInterpolation — see backend/database.py for the same fix in the
+# in-process upgrader.
+config.set_main_option(
+    "sqlalchemy.url",
+    _sync_url_for_alembic(ASYNC_DB_URL).replace("%", "%%"),
+)
 
 target_metadata = Base.metadata
 IS_SQLITE = ASYNC_DB_URL.startswith("sqlite")
