@@ -17,6 +17,7 @@ Auth:
     poll it without a token. See ``services/auth_service.py`` for the
     dev-mode fallback that keeps local boot working without Supabase.
 """
+import json
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -24,7 +25,7 @@ from pathlib import Path
 
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from database import init_db
@@ -138,17 +139,56 @@ if _SPA_DIR.is_dir() and (_SPA_DIR / "index.html").exists():
         name="spa-assets",
     )
 
+    def _render_index_with_runtime_config() -> HTMLResponse:
+        """Serve ``index.html`` with Supabase URL+anon key injected.
+
+        Vite normally bakes ``import.meta.env.VITE_*`` into the bundle at
+        build time, which couples the React app to ``--build-arg`` plumbing.
+        That's fragile on Railway and similar PaaS where runtime env vars
+        are easy to set but build args are easy to forget. Injecting a
+        ``window.GEOPO_CONFIG`` blob at request time decouples the two:
+        anytime ``SUPABASE_URL`` / ``SUPABASE_ANON_KEY`` change, a simple
+        restart picks them up — no rebuild required. The frontend reads
+        ``window.GEOPO_CONFIG`` with a graceful fallback to
+        ``import.meta.env`` for local Vite dev.
+        """
+        from config import get_settings
+
+        s = get_settings()
+        cfg = {
+            "supabase_url": (s.supabase_url or "").strip().rstrip("/"),
+            "supabase_anon_key": (s.supabase_anon_key or "").strip(),
+        }
+        html = (_SPA_DIR / "index.html").read_text(encoding="utf-8")
+        # Use json.dumps so any quotes/backslashes are properly escaped,
+        # and prepend an empty string literal to defang any closing </script>
+        # smuggled into the values (defense-in-depth; values come from our
+        # own settings, but cheap to harden).
+        injected = (
+            f"<script>window.GEOPO_CONFIG = {json.dumps(cfg)};</script>"
+        )
+        # Inject just before </head>. ``replace(..., 1)`` is intentional —
+        # only the first match should be touched even on weird future templates.
+        if "</head>" in html:
+            html = html.replace("</head>", f"{injected}\n  </head>", 1)
+        else:
+            # Fallback: prepend to body if no </head> tag exists.
+            html = injected + html
+        return HTMLResponse(html)
+
     # Catch-all that lets React Router own the URL space. Any GET that
     # isn't an /api/* call returns index.html so deep links work on
     # refresh. We intentionally register this *after* the routers so
     # API routes take precedence.
     @app.get("/{full_path:path}", include_in_schema=False)
-    async def spa_fallback(full_path: str) -> FileResponse:
-        # Serve real files at the root (e.g. favicon, robots.txt)
+    async def spa_fallback(full_path: str):
+        # Serve real files at the root (e.g. favicon, robots.txt). Skip
+        # index.html itself — that path goes through the injection
+        # renderer below so the config always lands in the bundle.
         candidate = _SPA_DIR / full_path
-        if full_path and candidate.is_file():
+        if full_path and candidate.is_file() and candidate.name != "index.html":
             return FileResponse(candidate)
-        return FileResponse(_SPA_DIR / "index.html")
+        return _render_index_with_runtime_config()
 else:
     logger.info(
         "SPA dist not found at %s — running in API-only mode (use Vite dev server).",

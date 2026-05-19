@@ -1,20 +1,46 @@
 /**
  * Singleton Supabase browser client.
  *
- * Reads URL + anon key from Vite env vars at build time. In dev these come
- * from `frontend/.env.local`; in production they're injected by Railway as
- * `VITE_SUPABASE_URL` / `VITE_SUPABASE_ANON_KEY` and baked into the static
- * bundle.
+ * Config resolution order — most → least reliable:
+ *   1. ``window.GEOPO_CONFIG`` — injected at request time by FastAPI when
+ *      serving ``index.html`` in production. Decouples deploy config from
+ *      the Docker build step, so updating Supabase env vars only needs a
+ *      process restart, not a rebuild.
+ *   2. ``import.meta.env.VITE_SUPABASE_URL`` / ``VITE_SUPABASE_ANON_KEY``
+ *      — Vite's build-time env. Used in local ``npm run dev`` where the
+ *      injected script tag isn't present.
  *
- * When either var is missing we export a sentinel `null` and the session
- * provider switches to "auth disabled" mode — the SPA renders directly
- * without a login screen, which is the dev fallback that pairs with the
- * backend's missing-secret behavior.
+ * When neither source supplies both values we export a sentinel ``null``
+ * and the SessionProvider switches to "auth disabled" mode — the SPA
+ * renders directly without a login gate (dev-only safety net).
  */
 import { createClient, type SupabaseClient } from '@supabase/supabase-js'
 
-const url = import.meta.env.VITE_SUPABASE_URL as string | undefined
-const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined
+declare global {
+  interface Window {
+    GEOPO_CONFIG?: {
+      supabase_url?: string
+      supabase_anon_key?: string
+    }
+  }
+}
+
+function pickConfig(): { url: string | undefined; anonKey: string | undefined } {
+  const runtime = typeof window !== 'undefined' ? window.GEOPO_CONFIG : undefined
+  const url =
+    (runtime?.supabase_url && runtime.supabase_url.length > 0
+      ? runtime.supabase_url
+      : undefined) ||
+    (import.meta.env.VITE_SUPABASE_URL as string | undefined)
+  const anonKey =
+    (runtime?.supabase_anon_key && runtime.supabase_anon_key.length > 0
+      ? runtime.supabase_anon_key
+      : undefined) ||
+    (import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined)
+  return { url, anonKey }
+}
+
+const { url, anonKey } = pickConfig()
 
 export const authEnabled: boolean = Boolean(url && anonKey)
 
