@@ -84,10 +84,31 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Public, unauthenticated. Used as Railway's healthcheck target.
+# Public, unauthenticated. Used as Railway's healthcheck target. Also
+# reports the auth posture so the operator can confirm in one HTTP call
+# whether the JWKS-based verifier is live (i.e. that the latest code
+# actually deployed). Returns plain JSON so it's curl-friendly.
 @app.get("/api/health")
-async def health() -> dict[str, str]:
-    return {"status": "ok"}
+async def health() -> dict[str, object]:
+    from config import get_settings
+    from services.auth_service import _jwks_client
+
+    s = get_settings()
+    if s.supabase_url and _jwks_client() is not None:
+        auth_mode = "jwks"
+    elif s.supabase_jwt_secret:
+        auth_mode = "hs256-static"
+    else:
+        auth_mode = "disabled"
+    return {
+        "status": "ok",
+        "auth_mode": auth_mode,
+        "supabase_url_set": bool(s.supabase_url),
+        "supabase_jwt_secret_set": bool(s.supabase_jwt_secret),
+        "allowed_emails_count": len(
+            [e for e in (s.allowed_emails or "").split(",") if e.strip()]
+        ),
+    }
 
 
 # Every data router gates on a valid Supabase JWT (or the dev fallback).
