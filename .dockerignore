@@ -1,0 +1,33 @@
+# Keep the build context small and avoid leaking local state.
+**/__pycache__/
+**/*.pyc
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+
+# Node / Vite
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# Python venvs / local DBs
+backend/.venv/
+backend/venv/
+backend/geopo.db
+backend/geopo.db-journal
+
+# Local env files — Railway injects real ones via Variables
+**/.env
+**/.env.*
+!**/.env.example
+
+# Git + editor noise
+.git/
+.gitignore
+.vscode/
+.idea/
+.DS_Store
+
+# Docs / scripts not needed in the image
+README.md
+start.sh

@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.db
+*.sqlite
+
+# Node
+node_modules/
+dist/
+.vite/
+
+# Env
+.env
+backend/.env
+
+# OS
+.DS_Store
