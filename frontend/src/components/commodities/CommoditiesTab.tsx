@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { RefreshCw } from 'lucide-react'
 import { apiFetch, apiPost } from '../../api/client'
@@ -37,9 +37,22 @@ export default function CommoditiesTab() {
     refetch()
   }
 
-  const filtered = activeCategory === 'all'
-    ? commodities
-    : commodities.filter(c => c.category === activeCategory)
+  const filtered = useMemo(
+    () => activeCategory === 'all'
+      ? commodities
+      : commodities.filter(c => c.category === activeCategory),
+    [activeCategory, commodities],
+  )
+  const overviewTickers = useMemo(() => filtered.map(c => c.ticker), [filtered])
+  const overviewTitle = activeCategory === 'all'
+    ? 'All commodities — normalized'
+    : `${CATEGORY_LABELS[activeCategory]} — normalized`
+
+  useEffect(() => {
+    if (selected && !filtered.some(c => c.ticker === selected.ticker)) {
+      setSelected(null)
+    }
+  }, [filtered, selected])
 
   const grouped: Record<string, Commodity[]> = {}
   for (const c of filtered) {
@@ -82,7 +95,10 @@ export default function CommoditiesTab() {
       )}
 
       {/* Multi-commodity overview chart (normalized %) */}
-      <CommoditiesOverviewChart />
+      <CommoditiesOverviewChart
+        tickers={overviewTickers}
+        title={overviewTitle}
+      />
 
       {/* Single-commodity OHLC chart panel */}
       {selected && (

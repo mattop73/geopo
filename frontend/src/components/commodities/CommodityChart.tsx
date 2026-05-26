@@ -33,14 +33,16 @@ export default function CommodityChart({ ticker }: { ticker: string }) {
   })
 
   useEffect(() => {
-    if (!containerRef.current) return
-    const chart = createChart(containerRef.current, {
+    const container = containerRef.current
+    if (!container) return
+    let disposed = false
+    const chart = createChart(container, {
       layout: { background: { color: '#1a1d27' }, textColor: '#94a3b8' },
       grid: { vertLines: { color: '#2a2d3a' }, horzLines: { color: '#2a2d3a' } },
       crosshair: { mode: 1 },
       rightPriceScale: { borderColor: '#2a2d3a' },
       timeScale: { borderColor: '#2a2d3a', timeVisible: true },
-      width: containerRef.current.clientWidth,
+      width: container.clientWidth,
       height: 320,
     })
     chartRef.current = chart
@@ -53,10 +55,17 @@ export default function CommodityChart({ ticker }: { ticker: string }) {
       wickDownColor: '#ef4444',
     })
     const ro = new ResizeObserver(() => {
-      chart.applyOptions({ width: containerRef.current?.clientWidth ?? 600 })
+      if (disposed) return
+      chart.applyOptions({ width: container.clientWidth || 600 })
     })
-    ro.observe(containerRef.current)
-    return () => { chart.remove(); ro.disconnect(); chartRef.current = null; seriesRef.current = null }
+    ro.observe(container)
+    return () => {
+      disposed = true
+      ro.disconnect()
+      chartRef.current = null
+      seriesRef.current = null
+      chart.remove()
+    }
   }, [])
 
   useEffect(() => {
@@ -97,7 +106,11 @@ export default function CommodityChart({ ticker }: { ticker: string }) {
           Loading chart…
         </div>
       )}
-      <div ref={containerRef} className="tv-chart" style={{ display: isLoading ? 'none' : 'block' }} />
+      <div
+        ref={containerRef}
+        className="tv-chart"
+        style={{ height: 320, visibility: isLoading ? 'hidden' : 'visible' }}
+      />
     </div>
   )
 }

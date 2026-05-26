@@ -124,8 +124,10 @@ export default function CommoditiesOverviewChart({
 
   // ---- Chart lifecycle ---------------------------------------------------
   useEffect(() => {
-    if (!containerRef.current) return
-    const chart = createChart(containerRef.current, {
+    const container = containerRef.current
+    if (!container) return
+    let disposed = false
+    const chart = createChart(container, {
       layout: {
         background: { type: ColorType.Solid, color: '#1a1d27' },
         textColor: '#94a3b8',
@@ -148,7 +150,7 @@ export default function CommoditiesOverviewChart({
       },
       handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: false },
       handleScale: { axisPressedMouseMove: true, mouseWheel: true, pinch: true },
-      width: containerRef.current.clientWidth,
+      width: container.clientWidth,
       height,
     })
     chartRef.current = chart
@@ -165,11 +167,13 @@ export default function CommoditiesOverviewChart({
     seriesRef.current.set('__ref__', refSeries)
 
     const ro = new ResizeObserver(() => {
-      chart.applyOptions({ width: containerRef.current?.clientWidth ?? 600 })
+      if (disposed) return
+      chart.applyOptions({ width: container.clientWidth || 600 })
     })
-    ro.observe(containerRef.current)
+    ro.observe(container)
 
     chart.subscribeCrosshairMove((param) => {
+      if (disposed) return
       if (!param.time || !param.seriesData.size) {
         setHovered(null)
         return
@@ -188,9 +192,11 @@ export default function CommoditiesOverviewChart({
     })
 
     return () => {
-      chart.remove()
+      disposed = true
+      ro.disconnect()
       chartRef.current = null
       seriesRef.current.clear()
+      chart.remove()
     }
   }, [])
 
@@ -372,7 +378,8 @@ export default function CommoditiesOverviewChart({
         <div
           ref={containerRef}
           style={{
-            display: isLoading || !data || data.commodities.length === 0 ? 'none' : 'block',
+            height,
+            visibility: isLoading || !data || data.commodities.length === 0 ? 'hidden' : 'visible',
           }}
         />
       </div>

@@ -82,7 +82,8 @@ export async function apiStream(
   body: unknown,
   onChunk: (text: string) => void,
   signal?: AbortSignal,
-): Promise<void> {
+  onHeaders?: (headers: Headers) => void,
+): Promise<Headers> {
   const headers = buildHeaders({ 'Content-Type': 'application/json' })
   const r = await fetch(`${BASE}${path}`, {
     method: 'POST',
@@ -100,6 +101,7 @@ export async function apiStream(
     throw new Error(`Stream ${path} → ${r.status} (signed out)`)
   }
   if (!r.ok) throw new Error(`Stream ${path} → ${r.status}`)
+  onHeaders?.(r.headers)
   const reader = r.body!.getReader()
   const decoder = new TextDecoder()
   while (true) {
@@ -107,4 +109,5 @@ export async function apiStream(
     if (done) break
     onChunk(decoder.decode(value, { stream: true }))
   }
+  return r.headers
 }

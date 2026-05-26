@@ -90,28 +90,21 @@ export default function ThemesTab() {
     abortRef.current = new AbortController()
 
     try {
-      const resp = await fetch('/api/themes/analyze', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ topic_id: theme.id, model, fresh }),
-        signal: abortRef.current.signal,
-      })
-      if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
-
-      const cache = (resp.headers.get('x-cache') as CacheState) ?? undefined
-      setCacheState((prev) => ({ ...prev, [theme.id]: cache }))
-
-      const reader = resp.body!.getReader()
-      const decoder = new TextDecoder()
-      for (;;) {
-        const { done, value } = await reader.read()
-        if (done) break
-        const chunk = decoder.decode(value, { stream: true })
+      await apiStream(
+        '/themes/analyze',
+        { topic_id: theme.id, model, fresh },
+        (chunk) => {
         setAnalysis((prev) => ({
           ...prev,
           [theme.id]: (prev[theme.id] ?? '') + chunk,
         }))
-      }
+        },
+        abortRef.current.signal,
+        (headers) => {
+          const cache = (headers.get('x-cache') as CacheState) ?? undefined
+          setCacheState((prev) => ({ ...prev, [theme.id]: cache }))
+        },
+      )
     } catch (e: any) {
       if (e.name !== 'AbortError') {
         setAnalysis((prev) => ({
