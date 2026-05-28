@@ -3,7 +3,7 @@
 Local-only dashboard that aggregates:
 
 - **Commodities** — real-time prices + interactive charts (Yahoo Finance via `yfinance`)
-- **News** — geopolitical headlines from NewsAPI (incl. Reuters/AFP), The Guardian, New York Times
+- **News** — geopolitical headlines from GDELT, RSS feeds, NewsData.io, NewsAPI, The Guardian, New York Times
 - **Polymarket** — prediction-market prices with anomaly detection
 - **LLM Analysis** — Anthropic Claude, OpenAI GPT, or local Ollama models, with live dashboard data injected as context
 
@@ -11,7 +11,7 @@ Local-only dashboard that aggregates:
 
 ```
 React + Vite (5173)  ◄──REST/SSE──►  FastAPI (8000)  ──►  yfinance
-                                                     ──►  NewsAPI / Guardian / NYT
+                                                     ──►  GDELT / RSS / NewsData.io / NewsAPI / Guardian / NYT
                                                      ──►  Polymarket Gamma API
                                                      ──►  Anthropic / OpenAI / Ollama
                                                      │
@@ -47,7 +47,10 @@ cp .env.example .env
 # edit .env and add your keys (all optional, but news needs at least one source)
 ```
 
-Free API keys:
+Free news sources:
+- GDELT: no key needed
+- RSS feeds: no key needed; configure `NEWS_RSS_FEEDS` as comma-separated URLs
+- NewsData.io: <https://newsdata.io/register>
 - NewsAPI: <https://newsapi.org/register>
 - Guardian: <https://open-platform.theguardian.com/access/>
 - NYT: <https://developer.nytimes.com/get-started>
@@ -119,6 +122,6 @@ Both rules are tunable in `backend/services/polymarket_service.py`.
 ## Notes
 
 - `yfinance` is unofficial and may rate-limit; commodity refresh defaults to 5 min.
-- NewsAPI free tier = 100 requests/day; reduce `NEWS_REFRESH_MINUTES` only if you have a paid plan.
+- GDELT and RSS require no keys. NewsData.io, NewsAPI, Guardian, and NYT are optional free-tier enrichments.
 - Polymarket Gamma API is public; no auth needed.
 - LLM context injection adds ~1k tokens per request — keep that in mind for paid APIs.

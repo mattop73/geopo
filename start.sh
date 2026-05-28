@@ -3,11 +3,8 @@ set -e
 
 cd "$(dirname "$0")"
 
-# Always (re)create backend/.env -> root .env so config picks up keys.
-# The previous guard skipped relink when a stale/dangling symlink existed.
-if [ -f .env ]; then
-  ln -sf "$(pwd)/.env" backend/.env
-else
+# The backend reads the root .env directly via backend/config.py.
+if [ ! -f .env ]; then
   echo "[geopo] WARNING: no .env at repo root — backend will start without API keys"
 fi
 

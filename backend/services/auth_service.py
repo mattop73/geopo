@@ -244,6 +244,7 @@ def log_provider_keys() -> None:
     flags = {
         "ANTHROPIC_API_KEY": bool(s.anthropic_api_key),
         "OPENAI_API_KEY": bool(s.openai_api_key),
+        "NEWSDATA_API_KEY": bool(s.newsdata_api_key),
         "NEWSAPI_KEY": bool(s.newsapi_key),
         "GUARDIAN_API_KEY": bool(s.guardian_api_key),
         "NYT_API_KEY": bool(s.nyt_api_key),

@@ -1,11 +1,22 @@
 from pydantic_settings import BaseSettings
 from functools import lru_cache
+from pathlib import Path
+
+
+ROOT_ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
 
 
 class Settings(BaseSettings):
     newsapi_key: str = ""
+    newsdata_api_key: str = ""
     guardian_api_key: str = ""
     nyt_api_key: str = ""
+    gdelt_enabled: bool = True
+    news_rss_feeds: str = (
+        "https://feeds.bbci.co.uk/news/world/rss.xml,"
+        "https://www.aljazeera.com/xml/rss/all.xml,"
+        "https://www.france24.com/en/rss"
+    )
     anthropic_api_key: str = ""
     openai_api_key: str = ""
     ollama_base_url: str = "http://localhost:11434"
@@ -47,7 +58,7 @@ class Settings(BaseSettings):
     theme_analysis_cache_minutes: int = 10
 
     class Config:
-        env_file = ".env"
+        env_file = ROOT_ENV_FILE
         env_file_encoding = "utf-8"
 
 

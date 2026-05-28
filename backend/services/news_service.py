@@ -1,8 +1,10 @@
 import asyncio
+import calendar
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+import feedparser
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc
@@ -20,6 +22,128 @@ GEOPOLITICS_KEYWORDS = (
     "NATO OR Ukraine OR Russia OR China OR Iran OR Israel OR "
     "commodity OR oil OR gas OR wheat OR inflation OR currency"
 )
+GDELT_QUERY = (
+    "(geopolitics OR war OR conflict OR sanctions OR diplomacy OR "
+    "NATO OR Ukraine OR Russia OR China OR Iran OR Israel OR Gaza OR "
+    "oil OR gas OR wheat OR inflation OR currency)"
+)
+
+
+def _configured_rss_feeds() -> list[str]:
+    """Return the comma-separated RSS feed URLs configured in env."""
+    return [url.strip() for url in settings.news_rss_feeds.split(",") if url.strip()]
+
+
+async def _fetch_newsdata(client: httpx.AsyncClient) -> list[dict]:
+    """Fetch articles from NewsData.io's free-tier latest-news endpoint."""
+    if not settings.newsdata_api_key:
+        logger.info("NEWSDATA_API_KEY missing in env — skipping NewsData.io source")
+        return []
+    try:
+        r = await client.get(
+            "https://newsdata.io/api/1/latest",
+            params={
+                "apikey": settings.newsdata_api_key,
+                "q": "geopolitics OR war OR sanctions OR diplomacy OR oil OR gas",
+                "language": "en",
+                "category": "world,business,politics",
+                "size": 10,
+            },
+            timeout=15,
+        )
+        r.raise_for_status()
+        articles = r.json().get("results", [])
+        return [
+            {
+                "source": a.get("source_name") or "NewsData.io",
+                "title": a.get("title", ""),
+                "description": a.get("description") or a.get("content") or "",
+                "url": a.get("link", ""),
+                "image_url": a.get("image_url"),
+                "published_at": _parse_dt(a.get("pubDate")),
+            }
+            for a in articles
+            if a.get("title") and a.get("link")
+        ]
+    except Exception as e:
+        logger.error(f"NewsData.io fetch failed: {e}")
+        return []
+
+
+async def _fetch_gdelt(client: httpx.AsyncClient) -> list[dict]:
+    """Fetch recent global news from GDELT DOC 2.0. No API key required."""
+    if not settings.gdelt_enabled:
+        logger.info("GDELT_ENABLED=false — skipping GDELT source")
+        return []
+    try:
+        r = await client.get(
+            "https://api.gdeltproject.org/api/v2/doc/doc",
+            params={
+                "query": GDELT_QUERY,
+                "mode": "artlist",
+                "format": "json",
+                "sort": "hybridrel",
+                "maxrecords": 50,
+                "timespan": "48h",
+            },
+            timeout=20,
+        )
+        r.raise_for_status()
+        articles = r.json().get("articles", [])
+        return [
+            {
+                "source": a.get("source") or a.get("domain") or "GDELT",
+                "title": a.get("title", ""),
+                "description": a.get("snippet") or "",
+                "url": a.get("url", ""),
+                "image_url": a.get("socialimage"),
+                "published_at": _parse_dt(a.get("seendate")),
+            }
+            for a in articles
+            if a.get("title") and a.get("url")
+        ]
+    except Exception as e:
+        logger.error(f"GDELT fetch failed: {e}")
+        return []
+
+
+async def _fetch_single_rss(client: httpx.AsyncClient, feed_url: str) -> list[dict]:
+    """Fetch and normalize one RSS/Atom feed."""
+    try:
+        r = await client.get(feed_url, timeout=15, follow_redirects=True)
+        r.raise_for_status()
+        parsed = feedparser.parse(r.content)
+        source = (parsed.feed.get("title") or parsed.feed.get("link") or feed_url).strip()
+        articles: list[dict] = []
+        for entry in parsed.entries[:25]:
+            url = entry.get("link", "")
+            title = entry.get("title", "")
+            if not title or not url:
+                continue
+            articles.append(
+                {
+                    "source": source,
+                    "title": title,
+                    "description": entry.get("summary") or entry.get("description") or "",
+                    "url": url,
+                    "image_url": _extract_rss_image(entry),
+                    "published_at": _parse_rss_dt(entry),
+                }
+            )
+        return articles
+    except Exception as e:
+        logger.error(f"RSS fetch failed for {feed_url}: {e}")
+        return []
+
+
+async def _fetch_rss_feeds(client: httpx.AsyncClient) -> list[dict]:
+    """Fetch all configured RSS feeds. RSS is free and requires no API key."""
+    feeds = _configured_rss_feeds()
+    if not feeds:
+        logger.info("NEWS_RSS_FEEDS is empty — skipping RSS sources")
+        return []
+    results = await asyncio.gather(*(_fetch_single_rss(client, url) for url in feeds))
+    return [article for feed_articles in results for article in feed_articles]
 
 
 async def _fetch_newsapi(client: httpx.AsyncClient) -> list[dict]:
@@ -157,6 +281,39 @@ def _extract_nyt_image(mm: Any) -> str | None:
     return None
 
 
+def _extract_rss_image(entry: Any) -> str | None:
+    """Best-effort image extraction from common RSS/Atom media extensions."""
+    media_content = entry.get("media_content") or []
+    if isinstance(media_content, list):
+        for item in media_content:
+            if isinstance(item, dict) and item.get("url"):
+                return item["url"]
+    media_thumbnail = entry.get("media_thumbnail") or []
+    if isinstance(media_thumbnail, list) and media_thumbnail:
+        thumb = media_thumbnail[0]
+        if isinstance(thumb, dict):
+            return thumb.get("url")
+    links = entry.get("links") or []
+    if isinstance(links, list):
+        for item in links:
+            if (
+                isinstance(item, dict)
+                and str(item.get("type", "")).startswith("image/")
+                and item.get("href")
+            ):
+                return item["href"]
+    return None
+
+
+def _parse_rss_dt(entry: Any) -> datetime | None:
+    """Parse feedparser's normalized time fields into naive UTC."""
+    for key in ("published_parsed", "updated_parsed", "created_parsed"):
+        parsed = entry.get(key)
+        if parsed:
+            return _to_naive_utc(datetime.fromtimestamp(calendar.timegm(parsed), timezone.utc))
+    return _parse_dt(entry.get("published") or entry.get("updated") or entry.get("created"))
+
+
 def _to_naive_utc(dt: datetime) -> datetime:
     """Normalize any datetime to a naive UTC datetime.
 
@@ -183,6 +340,10 @@ def _parse_dt(s: str | None) -> datetime | None:
         "%Y-%m-%dT%H:%M:%S%z",
         "%Y-%m-%dT%H:%M:%S.%fZ",
         "%Y-%m-%dT%H:%M:%S.%f%z",
+        "%Y%m%d%H%M%S",
+        "%Y%m%dT%H%M%SZ",
+        "%a, %d %b %Y %H:%M:%S %Z",
+        "%a, %d %b %Y %H:%M:%S %z",
     ):
         try:
             return _to_naive_utc(datetime.strptime(s, fmt))
@@ -204,14 +365,24 @@ def _iso_utc(dt: datetime | None) -> str | None:
 async def fetch_and_store_news(db: AsyncSession) -> dict[str, Any]:
     """Fetch news from all configured sources, persist new rows, return counts."""
     async with httpx.AsyncClient() as client:
-        newsapi, guardian, nyt = await asyncio.gather(
+        newsdata, gdelt, rss, newsapi, guardian, nyt = await asyncio.gather(
+            _fetch_newsdata(client),
+            _fetch_gdelt(client),
+            _fetch_rss_feeds(client),
             _fetch_newsapi(client),
             _fetch_guardian(client),
             _fetch_nyt(client),
         )
 
-    per_source = {"newsapi": len(newsapi), "guardian": len(guardian), "nyt": len(nyt)}
-    all_articles: list[dict] = [*newsapi, *guardian, *nyt]
+    per_source = {
+        "newsdata": len(newsdata),
+        "gdelt": len(gdelt),
+        "rss": len(rss),
+        "newsapi": len(newsapi),
+        "guardian": len(guardian),
+        "nyt": len(nyt),
+    }
+    all_articles: list[dict] = [*newsdata, *gdelt, *rss, *newsapi, *guardian, *nyt]
     fetched = len(all_articles)
     logger.info("Fetched %d articles (per source: %s)", fetched, per_source)
 
