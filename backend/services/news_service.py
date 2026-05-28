@@ -13,7 +13,7 @@ from sqlalchemy import select, desc
 
 from models.news import NewsArticle
 from config import get_settings
-from services.topic_service import classify_text
+from services.topic_service import OTHER_TOPIC, classify_text
 from services.keyword_service import extract_keywords_for_article
 
 logger = logging.getLogger(__name__)
@@ -55,9 +55,58 @@ ENGLISH_MARKERS = {
     "us",
     "with",
 }
-NON_LATIN_RE = re.compile(r"[\u0400-\u052f\u0590-\u05ff\u0600-\u06ff\u3040-\u30ff\u3400-\u9fff]")
+NON_LATIN_RE = re.compile(
+    r"[\u0370-\u03ff\u0400-\u052f\u0590-\u05ff\u0600-\u06ff\u3040-\u30ff\u3400-\u9fff]"
+)
 WORD_RE = re.compile(r"[A-Za-z']+")
 _translation_cache: dict[str, tuple[str, str | None]] = {}
+GENERAL_RELEVANCE_TERMS = {
+    "army",
+    "attack",
+    "bank",
+    "border",
+    "cabinet",
+    "central bank",
+    "conflict",
+    "congress",
+    "crisis",
+    "defence",
+    "defense",
+    "diplomacy",
+    "economy",
+    "foreign policy",
+    "government",
+    "inflation",
+    "leader",
+    "military",
+    "minister",
+    "parliament",
+    "policy",
+    "politics",
+    "president",
+    "prime minister",
+    "security",
+    "trade",
+    "war",
+}
+IRRELEVANT_NEWS_TERMS = {
+    "champions league",
+    "club world cup",
+    "fifa",
+    "football",
+    "injury",
+    "match",
+    "nba",
+    "neymar",
+    "olympics",
+    "premier league",
+    "scans",
+    "soccer",
+    "squad",
+    "tennis",
+    "tournament",
+    "world cup",
+}
 
 
 def _configured_rss_feeds() -> list[str]:
@@ -143,6 +192,27 @@ async def _translate_article_to_english(article: dict[str, Any]) -> dict[str, An
     except Exception as e:
         logger.error(f"News translation failed: {e}")
         return article
+
+
+def _is_relevant_news_article(article: dict[str, Any]) -> bool:
+    """Filter broad RSS/API feeds down to geopolitical and macro news."""
+    text = f"{article.get('title') or ''} {article.get('description') or ''}".lower()
+    if not text.strip():
+        return False
+    has_topic_match = classify_text(text) != OTHER_TOPIC["id"]
+    has_general_match = any(_term_matches(text, term) for term in GENERAL_RELEVANCE_TERMS)
+    has_irrelevant_match = any(_term_matches(text, term) for term in IRRELEVANT_NEWS_TERMS)
+    if has_irrelevant_match and not has_topic_match and not has_general_match:
+        return False
+    return has_topic_match or has_general_match
+
+
+def _term_matches(text: str, term: str) -> bool:
+    """Match a relevance term without accidental substrings."""
+    normalized = term.lower().strip()
+    if " " in normalized:
+        return normalized in text
+    return re.search(rf"\b{re.escape(normalized)}\b", text) is not None
 
 
 async def _fetch_newsdata(client: httpx.AsyncClient) -> list[dict]:
@@ -511,6 +581,9 @@ async def fetch_and_store_news(db: AsyncSession) -> dict[str, Any]:
         # Classify once at ingest time so subsequent reads can use SQL filters
         # on the `topic` column instead of recomputing.
         a = await _translate_article_to_english(a)
+        if not _is_relevant_news_article(a):
+            skipped_dup += 1
+            continue
         topic = classify_text(f"{a.get('title','')} {a.get('description','')}")
         db.add(NewsArticle(**a, topic=topic))
         stored += 1
@@ -536,11 +609,11 @@ async def get_latest_news(
     where the column is still NULL we fall back to the in-memory classifier
     so the UI never gets ``None``.
     """
-    q = select(NewsArticle).order_by(desc(NewsArticle.published_at)).limit(limit)
+    # Pull extra rows because old broad-feed rows may be filtered below before
+    # they reach the UI.
+    q = select(NewsArticle).order_by(desc(NewsArticle.published_at)).limit(min(limit * 3, 500))
     if source:
         q = q.where(NewsArticle.source == source)
-    if topic:
-        q = q.where(NewsArticle.topic == topic)
     result = await db.execute(q)
     rows = result.scalars().all()
 
@@ -558,9 +631,11 @@ async def get_latest_news(
                 "sentiment_score": r.sentiment_score,
             }
         )
-        tid = r.topic or classify_text(
-            f"{article.get('title') or ''} {article.get('description') or ''}"
-        )
+        tid = classify_text(f"{article.get('title') or ''} {article.get('description') or ''}")
+        if not _is_relevant_news_article(article):
+            continue
+        if topic and tid != topic:
+            continue
         items.append({
             "id": r.id,
             "source": r.source,
@@ -573,4 +648,6 @@ async def get_latest_news(
             "topic": tid,
             "tags": extract_keywords_for_article(article["title"], article["description"]),
         })
+        if len(items) >= limit:
+            break
     return items

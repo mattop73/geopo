@@ -15,6 +15,7 @@ market "linkage" used by analysts (e.g. oil + wheat for Russia–Ukraine).
 
 from __future__ import annotations
 
+import re
 from typing import TypedDict
 
 
@@ -140,9 +141,19 @@ def classify_text(text: str | None) -> str:
     t = text.lower()
     for topic in TOPICS:
         for kw in topic["keywords"]:
-            if kw in t:
+            if _keyword_matches(t, kw):
                 return topic["id"]
     return OTHER_TOPIC["id"]
+
+
+def _keyword_matches(text: str, keyword: str) -> bool:
+    """Match keywords without accidental substrings like ``xi`` in ``Brazil``."""
+    kw = keyword.lower().strip()
+    if not kw:
+        return False
+    if " " in kw:
+        return kw in text
+    return re.search(rf"\b{re.escape(kw)}\b", text) is not None
 
 
 def topic_meta(topic_id: str) -> Topic:

@@ -14,7 +14,7 @@ class Settings(BaseSettings):
     gdelt_enabled: bool = True
     news_rss_feeds: str = (
         "https://feeds.bbci.co.uk/news/world/rss.xml,"
-        "https://www.aljazeera.com/xml/rss/all.xml,"
+        "https://www.theguardian.com/world/rss,"
         "https://www.france24.com/en/rss"
     )
     news_translate_to_english: bool = True
