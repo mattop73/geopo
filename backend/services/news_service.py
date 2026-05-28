@@ -1,6 +1,8 @@
 import asyncio
 import calendar
+import json
 import logging
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -25,13 +27,122 @@ GEOPOLITICS_KEYWORDS = (
 GDELT_QUERY = (
     "(geopolitics OR war OR conflict OR sanctions OR diplomacy OR "
     "NATO OR Ukraine OR Russia OR China OR Iran OR Israel OR Gaza OR "
-    "oil OR gas OR wheat OR inflation OR currency)"
+    "oil OR gas OR wheat OR inflation OR currency) sourcelang:english"
 )
+ENGLISH_MARKERS = {
+    "a",
+    "an",
+    "and",
+    "are",
+    "as",
+    "at",
+    "be",
+    "by",
+    "for",
+    "from",
+    "has",
+    "have",
+    "in",
+    "is",
+    "it",
+    "of",
+    "on",
+    "or",
+    "said",
+    "says",
+    "the",
+    "to",
+    "us",
+    "with",
+}
+NON_LATIN_RE = re.compile(r"[\u0400-\u052f\u0590-\u05ff\u0600-\u06ff\u3040-\u30ff\u3400-\u9fff]")
+WORD_RE = re.compile(r"[A-Za-z']+")
+_translation_cache: dict[str, tuple[str, str | None]] = {}
 
 
 def _configured_rss_feeds() -> list[str]:
     """Return the comma-separated RSS feed URLs configured in env."""
     return [url.strip() for url in settings.news_rss_feeds.split(",") if url.strip()]
+
+
+def _looks_english(text: str | None) -> bool:
+    """Return True when text is likely already English enough for display."""
+    if not text:
+        return True
+    if NON_LATIN_RE.search(text):
+        return False
+    words = [word.lower() for word in WORD_RE.findall(text)]
+    if not words:
+        return True
+    marker_count = sum(1 for word in words if word in ENGLISH_MARKERS)
+    ascii_letters = sum(1 for char in text if char.isascii() and char.isalpha())
+    letters = sum(1 for char in text if char.isalpha())
+    ascii_ratio = ascii_letters / letters if letters else 1.0
+    return marker_count >= 2 or (ascii_ratio > 0.97 and marker_count >= 1)
+
+
+async def _translate_article_to_english(article: dict[str, Any]) -> dict[str, Any]:
+    """Translate article display fields to English when they look non-English."""
+    if not settings.news_translate_to_english:
+        return article
+
+    title = (article.get("title") or "").strip()
+    description = (article.get("description") or "").strip()
+    if _looks_english(f"{title} {description}"):
+        return article
+
+    cache_key = f"{title}\n---\n{description}"
+    cached = _translation_cache.get(cache_key)
+    if cached:
+        return {**article, "title": cached[0], "description": cached[1]}
+
+    if not settings.anthropic_api_key:
+        logger.info("ANTHROPIC_API_KEY missing — cannot translate non-English news article")
+        return article
+
+    try:
+        import anthropic
+
+        client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
+        response = await client.messages.create(
+            model=settings.news_translation_model,
+            max_tokens=600,
+            system=(
+                "You translate news article display text into clear, neutral English. "
+                "Preserve names, places, numbers, and the factual meaning. Output JSON only."
+            ),
+            messages=[
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {
+                            "title": title,
+                            "description": description,
+                            "schema": {
+                                "title": "English title",
+                                "description": "English description or null",
+                            },
+                        },
+                        ensure_ascii=False,
+                    ),
+                }
+            ],
+        )
+        raw = response.content[0].text if response.content else ""
+        payload = json.loads(raw)
+        translated_title = str(payload.get("title") or title).strip()
+        translated_description = payload.get("description")
+        if translated_description is not None:
+            translated_description = str(translated_description).strip()
+        _translation_cache[cache_key] = (translated_title, translated_description)
+        return {
+            **article,
+            "title": translated_title,
+            "description": translated_description,
+        }
+    except Exception as e:
+        logger.error(f"News translation failed: {e}")
+        return article
 
 
 async def _fetch_newsdata(client: httpx.AsyncClient) -> list[dict]:
@@ -399,6 +510,7 @@ async def fetch_and_store_news(db: AsyncSession) -> dict[str, Any]:
             continue
         # Classify once at ingest time so subsequent reads can use SQL filters
         # on the `topic` column instead of recomputing.
+        a = await _translate_article_to_english(a)
         topic = classify_text(f"{a.get('title','')} {a.get('description','')}")
         db.add(NewsArticle(**a, topic=topic))
         stored += 1
@@ -434,17 +546,31 @@ async def get_latest_news(
 
     items: list[dict] = []
     for r in rows:
-        tid = r.topic or classify_text(f"{r.title or ''} {r.description or ''}")
+        article = await _translate_article_to_english(
+            {
+                "id": r.id,
+                "source": r.source,
+                "title": r.title,
+                "description": r.description,
+                "url": r.url,
+                "image_url": r.image_url,
+                "published_at": _iso_utc(r.published_at),
+                "sentiment_score": r.sentiment_score,
+            }
+        )
+        tid = r.topic or classify_text(
+            f"{article.get('title') or ''} {article.get('description') or ''}"
+        )
         items.append({
             "id": r.id,
             "source": r.source,
-            "title": r.title,
-            "description": r.description,
+            "title": article["title"],
+            "description": article["description"],
             "url": r.url,
             "image_url": r.image_url,
             "published_at": _iso_utc(r.published_at),
             "sentiment_score": r.sentiment_score,
             "topic": tid,
-            "tags": extract_keywords_for_article(r.title, r.description),
+            "tags": extract_keywords_for_article(article["title"], article["description"]),
         })
     return items

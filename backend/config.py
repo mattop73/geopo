@@ -17,6 +17,8 @@ class Settings(BaseSettings):
         "https://www.aljazeera.com/xml/rss/all.xml,"
         "https://www.france24.com/en/rss"
     )
+    news_translate_to_english: bool = True
+    news_translation_model: str = "claude-sonnet-4-6"
     anthropic_api_key: str = ""
     openai_api_key: str = ""
     ollama_base_url: str = "http://localhost:11434"
