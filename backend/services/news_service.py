@@ -60,6 +60,8 @@ NON_LATIN_RE = re.compile(
 )
 WORD_RE = re.compile(r"[A-Za-z']+")
 _translation_cache: dict[str, tuple[str, str | None]] = {}
+SUPPORTED_DISPLAY_LANGUAGES = {"en": "English", "fr": "French"}
+_display_translation_cache: dict[str, tuple[str, str | None]] = {}
 GENERAL_RELEVANCE_TERMS = {
     "army",
     "attack",
@@ -112,6 +114,17 @@ IRRELEVANT_NEWS_TERMS = {
 def _configured_rss_feeds() -> list[str]:
     """Return the comma-separated RSS feed URLs configured in env."""
     return [url.strip() for url in settings.news_rss_feeds.split(",") if url.strip()]
+
+
+def normalize_display_language(language: str | None) -> str:
+    """Normalize user-selected display language to a supported language code."""
+    code = (language or "en").strip().lower()
+    return code if code in SUPPORTED_DISPLAY_LANGUAGES else "en"
+
+
+def display_language_name(language: str | None) -> str:
+    """Return the English name for a supported display language code."""
+    return SUPPORTED_DISPLAY_LANGUAGES[normalize_display_language(language)]
 
 
 def _looks_english(text: str | None) -> bool:
@@ -192,6 +205,131 @@ async def _translate_article_to_english(article: dict[str, Any]) -> dict[str, An
     except Exception as e:
         logger.error(f"News translation failed: {e}")
         return article
+
+
+async def _translate_articles_for_display(
+    articles: list[dict[str, Any]],
+    language: str | None,
+) -> list[dict[str, Any]]:
+    """Translate article display fields for the selected UI language.
+
+    English is the canonical stored/display language. French translations are
+    returned transiently and never persisted, so switching back to English
+    immediately restores the canonical titles.
+    """
+    target = normalize_display_language(language)
+    if not articles:
+        return articles
+
+    candidates: list[tuple[int, dict[str, Any]]] = []
+    for idx, article in enumerate(articles):
+        title = article.get("title") or ""
+        description = article.get("description") or ""
+        if target == "en" and _looks_english(f"{title} {description}"):
+            continue
+        cache_key = _display_cache_key(target, title, description)
+        cached = _display_translation_cache.get(cache_key)
+        if cached:
+            article["title"], article["description"] = cached
+            continue
+        candidates.append((idx, article))
+
+    if not candidates or not settings.anthropic_api_key:
+        return articles
+
+    payload = [
+        {
+            "index": idx,
+            "title": article.get("title") or "",
+            "description": article.get("description") or "",
+        }
+        for idx, article in candidates
+    ]
+    original_by_index = {
+        item["index"]: (item["title"], item["description"])
+        for item in payload
+    }
+
+    try:
+        import anthropic
+
+        client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
+        by_index: dict[int, dict[str, Any]] = {}
+        for batch in _chunks(payload, size=25):
+            response = await client.messages.create(
+                model=settings.news_translation_model,
+                max_tokens=min(4096, max(800, len(batch) * 150)),
+                system=(
+                    "You translate news headlines and short descriptions. "
+                    "Preserve names, numbers, institutions, and factual meaning. "
+                    "Output ONLY a JSON array with objects: index, title, description."
+                ),
+                messages=[
+                    {
+                        "role": "user",
+                        "content": json.dumps(
+                            {
+                                "target_language": display_language_name(target),
+                                "items": batch,
+                            },
+                            ensure_ascii=False,
+                        ),
+                    }
+                ],
+            )
+            raw = response.content[0].text if response.content else ""
+            for item in _parse_translation_array(raw):
+                if isinstance(item, dict) and "index" in item:
+                    by_index[int(item["index"])] = item
+
+        for idx, article in candidates:
+            _apply_translated_article(article, by_index.get(idx), target, original_by_index[idx])
+    except Exception as e:
+        logger.error(f"Display translation failed: {e}")
+
+    return articles
+
+
+def _display_cache_key(language: str, title: str | None, description: str | None) -> str:
+    """Build a stable in-process cache key for display translations."""
+    return f"{normalize_display_language(language)}\n{title or ''}\n---\n{description or ''}"
+
+
+def _apply_translated_article(
+    article: dict[str, Any],
+    translated: dict[str, Any] | None,
+    target_language: str,
+    original: tuple[str, str | None],
+) -> None:
+    """Apply one translated item to an article dict and cache it."""
+    if not translated:
+        return
+    title = str(translated.get("title") or article.get("title") or "").strip()
+    description = translated.get("description")
+    if description is not None:
+        description = str(description).strip()
+    article["title"] = title
+    article["description"] = description
+    original_title, original_description = original
+    _display_translation_cache[_display_cache_key(target_language, original_title, original_description)] = (
+        title,
+        description,
+    )
+
+
+def _chunks(items: list[dict[str, Any]], size: int) -> list[list[dict[str, Any]]]:
+    """Split items into bounded batches for LLM translation calls."""
+    return [items[i:i + size] for i in range(0, len(items), size)]
+
+
+def _parse_translation_array(raw: str) -> list[dict[str, Any]]:
+    """Parse a JSON array even if the model wraps it in a fenced block."""
+    text = raw.strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*", "", text)
+        text = re.sub(r"\s*```$", "", text)
+    parsed = json.loads(text)
+    return parsed if isinstance(parsed, list) else []
 
 
 def _is_relevant_news_article(article: dict[str, Any]) -> bool:
@@ -602,6 +740,7 @@ async def get_latest_news(
     limit: int = 60,
     source: str | None = None,
     topic: str | None = None,
+    language: str | None = "en",
 ) -> list[dict]:
     """Return latest news rows. Filters topic at the SQL layer.
 
@@ -650,4 +789,4 @@ async def get_latest_news(
         })
         if len(items) >= limit:
             break
-    return items
+    return await _translate_articles_for_display(items, language)

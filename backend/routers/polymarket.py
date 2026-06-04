@@ -19,10 +19,11 @@ async def list_markets(
         "anomaly",
         description="Sort mode: recent | volume | volume_24h | anomaly",
     ),
+    language: str = Query("en", pattern="^(en|fr)$"),
     db: AsyncSession = Depends(get_db),
 ):
     return await get_latest_polymarket(
-        db, anomalies_only=anomalies_only, topic=topic, sort=sort
+        db, anomalies_only=anomalies_only, topic=topic, sort=sort, language=language
     )
 
 

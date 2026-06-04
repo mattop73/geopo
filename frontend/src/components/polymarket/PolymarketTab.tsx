@@ -12,6 +12,7 @@ import {
 } from 'lucide-react'
 import { apiFetch, apiPost } from '../../api/client'
 import { fmtVolume, timeAgo } from '../../lib/format'
+import { useLanguage } from '../../hooks/useLanguage'
 
 interface Market {
   condition_id: string
@@ -50,6 +51,7 @@ export default function PolymarketTab() {
   const [anomaliesOnly, setAnomaliesOnly] = useState(false)
   const [activeTopic, setActiveTopic] = useState<string>('all')
   const [sort, setSort] = useState<SortMode>('volume')
+  const { language } = useLanguage()
 
   const { data: topics = [] } = useQuery<Topic[]>({
     queryKey: ['topics'],
@@ -58,11 +60,12 @@ export default function PolymarketTab() {
   })
 
   const { data: markets = [], isLoading, refetch } = useQuery<Market[]>({
-    queryKey: ['polymarket', anomaliesOnly, activeTopic, sort],
+    queryKey: ['polymarket', anomaliesOnly, activeTopic, sort, language],
     queryFn: () => {
       const params = new URLSearchParams({
         anomalies_only: String(anomaliesOnly),
         sort,
+        language,
       })
       if (activeTopic !== 'all') params.set('topic', activeTopic)
       return apiFetch(`/polymarket/?${params.toString()}`)
@@ -79,10 +82,10 @@ export default function PolymarketTab() {
   // To populate topic chip counts even for non-active topics we use a separate
   // unfiltered query, otherwise the count would be 0 when filtered to one.
   const { data: allMarkets = [] } = useQuery<Market[]>({
-    queryKey: ['polymarket-counts', anomaliesOnly],
+    queryKey: ['polymarket-counts', anomaliesOnly, language],
     queryFn: () =>
       apiFetch(
-        `/polymarket/?anomalies_only=${anomaliesOnly}&sort=anomaly`,
+        `/polymarket/?anomalies_only=${anomaliesOnly}&sort=anomaly&language=${language}`,
       ),
     staleTime: 60_000,
   })

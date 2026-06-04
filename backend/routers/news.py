@@ -12,9 +12,10 @@ async def list_news(
     limit: int = Query(60, le=200),
     source: str | None = Query(None),
     topic: str | None = Query(None, description="Filter by topic id, e.g. russia_ukraine"),
+    language: str = Query("en", pattern="^(en|fr)$"),
     db: AsyncSession = Depends(get_db),
 ):
-    return await get_latest_news(db, limit=limit, source=source, topic=topic)
+    return await get_latest_news(db, limit=limit, source=source, topic=topic, language=language)
 
 
 @router.post("/refresh")

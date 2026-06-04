@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 import { Clock } from 'lucide-react'
 import { apiFetch } from '../../api/client'
 import { timeAgo } from '../../lib/format'
+import { useLanguage } from '../../hooks/useLanguage'
 
 interface Article {
   id: number
@@ -34,9 +35,10 @@ export default function LatestNewsBox({
   limit?: number
   className?: string
 }) {
+  const { language } = useLanguage()
   const { data: items = [], isLoading } = useQuery<Article[]>({
-    queryKey: ['news-latest', limit],
-    queryFn: () => apiFetch(`/news/?limit=${limit}`),
+    queryKey: ['news-latest', limit, language],
+    queryFn: () => apiFetch(`/news/?limit=${limit}&language=${language}`),
     refetchInterval: 60_000,
     staleTime: 30_000,
   })

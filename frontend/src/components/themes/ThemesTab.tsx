@@ -15,6 +15,7 @@ import { fmtPct, fmtPrice, timeAgo } from '../../lib/format'
 import { useLLMModel } from '../../hooks/useLLMModel'
 import LLMModelPicker from '../common/LLMModelPicker'
 import CommoditiesOverviewChart from '../commodities/CommoditiesOverviewChart'
+import { useLanguage } from '../../hooks/useLanguage'
 
 interface Commodity {
   ticker: string
@@ -65,14 +66,15 @@ type CacheState = 'HIT' | 'MISS' | undefined
 
 export default function ThemesTab() {
   const { model } = useLLMModel()
+  const { language, languageName } = useLanguage()
   const [analysis, setAnalysis] = useState<Record<string, string>>({})
   const [cacheState, setCacheState] = useState<Record<string, CacheState>>({})
   const [streamingId, setStreamingId] = useState<string | null>(null)
   const abortRef = useRef<AbortController | null>(null)
 
   const { data: themes = [], isLoading, refetch, isFetching } = useQuery<Theme[]>({
-    queryKey: ['themes'],
-    queryFn: () => apiFetch('/themes/'),
+    queryKey: ['themes', language],
+    queryFn: () => apiFetch(`/themes/?language=${language}`),
     refetchInterval: 5 * 60 * 1000,
   })
 
@@ -92,7 +94,7 @@ export default function ThemesTab() {
     try {
       await apiStream(
         '/themes/analyze',
-        { topic_id: theme.id, model, fresh },
+        { topic_id: theme.id, model, fresh, language },
         (chunk) => {
         setAnalysis((prev) => ({
           ...prev,
@@ -134,7 +136,7 @@ export default function ThemesTab() {
             Commodities, news, and Polymarket odds grouped by topic. Click
             <span className="text-amber-300"> Analyze </span>
             to have the selected LLM explain how the three sources reinforce
-            each other.
+            each other in {languageName}.
           </p>
         </div>
         <div className="flex items-center gap-2">

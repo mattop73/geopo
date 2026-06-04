@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc
 
 from models.polymarket import PolymarketMarket, PolymarketSnapshot
+from services.news_service import _translate_articles_for_display
 from services.topic_service import classify_text
 
 logger = logging.getLogger(__name__)
@@ -250,6 +251,7 @@ async def get_latest_polymarket(
     anomalies_only: bool = False,
     topic: str | None = None,
     sort: str = "anomaly",
+    language: str | None = "en",
 ) -> list[dict]:
     """Return latest market snapshots with topic classification and sortable output.
 
@@ -328,6 +330,16 @@ async def get_latest_polymarket(
         results.sort(key=lambda x: -(x.get("volume_24h") or 0))
     else:  # "anomaly" (default)
         results.sort(key=lambda x: (not x["is_anomaly"], -(x["volume"] or 0)))
+
+    translation_items = [
+        {"title": item["question"], "description": item.get("anomaly_reason")}
+        for item in results
+    ]
+    translated_items = await _translate_articles_for_display(translation_items, language)
+    for item, translated in zip(results, translated_items, strict=False):
+        item["question"] = translated.get("title") or item["question"]
+        if item.get("anomaly_reason"):
+            item["anomaly_reason"] = translated.get("description") or item["anomaly_reason"]
     return results
 
 

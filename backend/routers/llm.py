@@ -3,6 +3,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from services.llm_service import stream_llm, list_ollama_models
+from services.news_service import display_language_name, normalize_display_language
 from config import get_settings
 
 router = APIRouter(prefix="/api/llm", tags=["llm"])
@@ -19,12 +20,15 @@ class AnalyzeRequest(BaseModel):
     prompt: str
     model: str = ""
     system: str = ""
+    language: str = "en"
 
 
 @router.post("/analyze")
 async def analyze(req: AnalyzeRequest):
     model = req.model or settings.default_llm_model
+    language_name = display_language_name(normalize_display_language(req.language))
     system = req.system or GEOPO_SYSTEM
+    system = f"{system} Write the entire response in {language_name}."
 
     async def generate():
         async for chunk in stream_llm(req.prompt, model, system):

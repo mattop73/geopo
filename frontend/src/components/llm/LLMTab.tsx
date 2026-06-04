@@ -3,6 +3,7 @@ import { Send, Loader2, Sparkles } from 'lucide-react'
 import { apiFetch, apiStream } from '../../api/client'
 import { useLLMModel } from '../../hooks/useLLMModel'
 import LLMModelPicker from '../common/LLMModelPicker'
+import { useLanguage } from '../../hooks/useLanguage'
 
 const PRESET_PROMPTS = [
   {
@@ -32,6 +33,7 @@ export default function LLMTab() {
   const abortRef = useRef<AbortController | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const { model: selectedModel } = useLLMModel()
+  const { language, languageName } = useLanguage()
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' })
@@ -41,8 +43,8 @@ export default function LLMTab() {
     try {
       const [commodities, polymarket, news] = await Promise.all([
         apiFetch<any[]>('/commodities/'),
-        apiFetch<any[]>('/polymarket/'),
-        apiFetch<any[]>('/news/?limit=15'),
+        apiFetch<any[]>(`/polymarket/?language=${language}`),
+        apiFetch<any[]>(`/news/?limit=15&language=${language}`),
       ])
       const top = commodities.slice(0, 12).map((c: any) =>
         `${c.name} (${c.ticker}): $${c.price?.toFixed(2)} ${c.change_pct >= 0 ? '+' : ''}${c.change_pct?.toFixed(2)}%`,
@@ -58,6 +60,8 @@ export default function LLMTab() {
       ).join('\n')
 
       return `## Live Context
+Answer language: ${languageName}. Write the whole analysis in ${languageName}.
+
 ### Commodities (top movers)
 ${top || '(no data)'}
 
@@ -89,7 +93,7 @@ ${userPrompt}`
     try {
       await apiStream(
         '/llm/analyze',
-        { prompt: fullPrompt, model: selectedModel },
+        { prompt: fullPrompt, model: selectedModel, language },
         chunk => {
           setMessages(prev => {
             const copy = [...prev]
@@ -131,6 +135,7 @@ ${userPrompt}`
           <div className="text-center pt-12">
             <Sparkles className="w-10 h-10 text-slate-700 mx-auto mb-3" />
             <p className="text-slate-500 text-sm">Ask the LLM about commodity moves, news, or Polymarket bets.</p>
+            <p className="text-slate-600 text-xs mt-1">Responses follow the selected language: {languageName}.</p>
             <p className="text-slate-600 text-xs mt-1">Live dashboard data is injected automatically.</p>
             <div className="mt-6 grid grid-cols-1 sm:grid-cols-2 gap-2 max-w-2xl mx-auto">
               {PRESET_PROMPTS.map(p => (

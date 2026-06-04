@@ -10,6 +10,7 @@ import ThemesTab from './components/themes/ThemesTab'
 import LLMModelPicker from './components/common/LLMModelPicker'
 import LoginScreen from './components/auth/LoginScreen'
 import { signOut, useSession } from './lib/session'
+import { LANGUAGES, type LanguageCode, useLanguage } from './hooks/useLanguage'
 
 const TABS = [
   { id: 'commodities', label: 'Commodities', icon: BarChart2 },
@@ -25,6 +26,7 @@ type TabId = typeof TABS[number]['id']
 export default function App() {
   const [active, setActive] = useState<TabId>('commodities')
   const { session, loading, authEnabled } = useSession()
+  const { language, setLanguage } = useLanguage()
 
   // While Supabase rehydrates the session from storage we render a blank
   // dark frame instead of flashing the login screen for users who are
@@ -53,6 +55,7 @@ export default function App() {
           <span className="text-xs text-slate-500 font-mono">Geopolitics Dashboard</span>
         </div>
         <div className="ml-auto flex items-center gap-3">
+          <LanguageSelector language={language} onChange={setLanguage} />
           <LLMModelPicker />
           <div className="flex items-center gap-1">
             <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
@@ -105,6 +108,34 @@ export default function App() {
         {active === 'themes'      && <ThemesTab />}
         {active === 'llm'         && <LLMTab />}
       </main>
+    </div>
+  )
+}
+
+function LanguageSelector({
+  language,
+  onChange,
+}: {
+  language: LanguageCode
+  onChange: (language: LanguageCode) => void
+}) {
+  return (
+    <div className="flex items-center gap-1 rounded-lg bg-[#0f1117] border border-[#2a2d3a] p-1">
+      {(Object.keys(LANGUAGES) as LanguageCode[]).map((code) => (
+        <button
+          key={code}
+          onClick={() => onChange(code)}
+          className={clsx(
+            'px-2.5 py-1 rounded text-xs font-medium transition-colors',
+            language === code
+              ? 'bg-blue-600 text-white'
+              : 'text-slate-400 hover:text-white hover:bg-[#1a1d27]',
+          )}
+          title={`Display headlines and LLM analysis in ${LANGUAGES[code].llmName}`}
+        >
+          {LANGUAGES[code].label}
+        </button>
+      ))}
     </div>
   )
 }

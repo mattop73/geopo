@@ -16,7 +16,7 @@ import logging
 import time
 from typing import Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -25,7 +25,7 @@ from config import get_settings
 from database import get_db
 from services.commodity_service import get_latest_commodities
 from services.llm_service import stream_llm
-from services.news_service import get_latest_news
+from services.news_service import display_language_name, get_latest_news, normalize_display_language
 from services.polymarket_service import get_latest_polymarket
 from services.topic_service import all_topics, classify_text, topic_meta
 
@@ -35,10 +35,10 @@ settings = get_settings()
 
 
 # -------------------- analyse cache --------------------
-# Keyed by (topic_id, model) so flipping provider doesn't return stale text.
+# Keyed by (topic_id, model, language) so flipping provider/language doesn't return stale text.
 # Each entry is (created_at_epoch, full_text). Kept in-process — fine for a
 # single-uvicorn-worker dev setup. For multi-worker we'd promote to Redis.
-_ANALYSIS_CACHE: dict[tuple[str, str], tuple[float, str]] = {}
+_ANALYSIS_CACHE: dict[tuple[str, str, str], tuple[float, str]] = {}
 _ANALYSIS_LOCK = asyncio.Lock()
 
 
@@ -46,7 +46,7 @@ def _cache_ttl_seconds() -> int:
     return max(0, int(settings.theme_analysis_cache_minutes) * 60)
 
 
-def _cache_get(key: tuple[str, str]) -> str | None:
+def _cache_get(key: tuple[str, str, str]) -> str | None:
     entry = _ANALYSIS_CACHE.get(key)
     if not entry:
         return None
@@ -58,7 +58,7 @@ def _cache_get(key: tuple[str, str]) -> str | None:
     return text
 
 
-def _cache_set(key: tuple[str, str], text: str) -> None:
+def _cache_set(key: tuple[str, str, str], text: str) -> None:
     if _cache_ttl_seconds() == 0 or not text.strip():
         return
     _ANALYSIS_CACHE[key] = (time.time(), text)
@@ -91,10 +91,14 @@ def _bucket_by_topic(items: list[dict], text_fn) -> dict[str, list[dict]]:
 
 
 @router.get("/")
-async def list_themes(db: AsyncSession = Depends(get_db)) -> list[dict[str, Any]]:
+async def list_themes(
+    language: str = Query("en", pattern="^(en|fr)$"),
+    db: AsyncSession = Depends(get_db),
+) -> list[dict[str, Any]]:
     """Return every active theme with its linked commodities, news, and markets."""
-    news = await get_latest_news(db, limit=200)
-    markets = await get_latest_polymarket(db)
+    lang = normalize_display_language(language)
+    news = await get_latest_news(db, limit=200, language=lang)
+    markets = await get_latest_polymarket(db, language=lang)
     commodities = await get_latest_commodities(db)
     commodities_by_ticker = {c["ticker"]: c for c in commodities}
 
@@ -150,6 +154,7 @@ async def list_themes(db: AsyncSession = Depends(get_db)) -> list[dict[str, Any]
 class AnalyzeRequest(BaseModel):
     topic_id: str
     model: str = ""
+    language: str = "en"
     # When True the cache is bypassed and a fresh stream is generated. The
     # fresh result still updates the cache for subsequent reads.
     fresh: bool = False
@@ -208,9 +213,11 @@ async def analyze_theme(
     """Stream an LLM analysis linking commodities + news + markets for one theme."""
     topic = topic_meta(req.topic_id)
     model = req.model or settings.default_llm_model
+    lang = normalize_display_language(req.language)
+    language_name = display_language_name(lang)
 
-    news = await get_latest_news(db, limit=200)
-    markets = await get_latest_polymarket(db)
+    news = await get_latest_news(db, limit=200, language=lang)
+    markets = await get_latest_polymarket(db, language=lang)
     commodities = await get_latest_commodities(db)
     commodities_by_ticker = {c["ticker"]: c for c in commodities}
 
@@ -228,7 +235,7 @@ async def analyze_theme(
         if t in commodities_by_ticker
     ]
 
-    cache_key = (req.topic_id, model)
+    cache_key = (req.topic_id, model, lang)
 
     # Fast path: serve fully-formed cached analysis as a single response. We
     # still return it via StreamingResponse so the frontend reading code is
@@ -252,6 +259,7 @@ async def analyze_theme(
 Write a 4-6 paragraph brief that **explicitly links** the three sources below:
 what the news flow says, how prediction markets are pricing it, and what the
 commodity moves confirm or contradict. Cite specific numbers.
+Write the entire brief in {language_name}.
 
 End with:
 1. The most likely scenario for the next 2 weeks.
@@ -276,7 +284,8 @@ End with:
         buf: list[str] = []
         had_error = False
         try:
-            async for chunk in stream_llm(prompt, model, system=SYSTEM_PROMPT):
+            system = f"{SYSTEM_PROMPT} Write the entire response in {language_name}."
+            async for chunk in stream_llm(prompt, model, system=system):
                 buf.append(chunk)
                 yield chunk
         except Exception as exc:

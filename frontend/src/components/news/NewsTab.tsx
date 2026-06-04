@@ -4,6 +4,7 @@ import { ExternalLink, RefreshCw } from 'lucide-react'
 import { apiFetch, apiPost } from '../../api/client'
 import { timeAgo } from '../../lib/format'
 import LatestNewsBox from './LatestNewsBox'
+import { useLanguage } from '../../hooks/useLanguage'
 
 interface Article {
   id: number
@@ -27,6 +28,7 @@ interface Topic {
 export default function NewsTab() {
   const [activeSource, setActiveSource] = useState('All')
   const [activeTopic, setActiveTopic] = useState<string>('all')
+  const { language } = useLanguage()
 
   const { data: topics = [] } = useQuery<Topic[]>({
     queryKey: ['topics'],
@@ -35,9 +37,9 @@ export default function NewsTab() {
   })
 
   const { data: articles = [], isLoading, refetch } = useQuery<Article[]>({
-    queryKey: ['news', activeSource, activeTopic],
+    queryKey: ['news', activeSource, activeTopic, language],
     queryFn: () => {
-      const params = new URLSearchParams({ limit: '120' })
+      const params = new URLSearchParams({ limit: '120', language })
       if (activeSource !== 'All') params.set('source', activeSource)
       if (activeTopic !== 'all') params.set('topic', activeTopic)
       return apiFetch(`/news/?${params.toString()}`)
