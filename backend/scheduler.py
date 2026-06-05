@@ -37,6 +37,37 @@ async def _job_polymarket():
             logger.error(f"Polymarket scheduler error: {e}")
 
 
+async def _job_predictions():
+    """Score forecasts whose target hour passed, then generate new ones.
+
+    Scoring runs first so the freshly-elapsed predictions get resolved
+    against actuals before we add the next batch. Each step uses its own
+    session and is guarded so a failure in one model doesn't block the
+    other.
+    """
+    from services.prediction_service import (
+        run_quant_predictions,
+        run_semantic_predictions,
+        score_due_predictions,
+    )
+
+    async with AsyncSessionLocal() as db:
+        try:
+            await score_due_predictions(db)
+        except Exception as e:
+            logger.error(f"Prediction scoring error: {e}")
+    async with AsyncSessionLocal() as db:
+        try:
+            await run_quant_predictions(db)
+        except Exception as e:
+            logger.error(f"Quant prediction error: {e}")
+    async with AsyncSessionLocal() as db:
+        try:
+            await run_semantic_predictions(db)
+        except Exception as e:
+            logger.error(f"Semantic prediction error: {e}")
+
+
 async def _job_podcasts():
     """Discover new episodes then process a handful of pending ones.
 
@@ -81,6 +112,12 @@ def start_scheduler():
         _job_podcasts,
         trigger=IntervalTrigger(minutes=settings.podcast_refresh_minutes),
         id="podcasts",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        _job_predictions,
+        trigger=IntervalTrigger(minutes=settings.prediction_refresh_minutes),
+        id="predictions",
         replace_existing=True,
     )
     scheduler.start()

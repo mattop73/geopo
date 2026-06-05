@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { BarChart2, Newspaper, TrendingUp, Bot, Activity, Sparkles, Mic2, LogOut } from 'lucide-react'
+import { BarChart2, Newspaper, TrendingUp, Bot, Activity, Sparkles, Mic2, Target, LogOut } from 'lucide-react'
 import { clsx } from 'clsx'
 import CommoditiesTab from './components/commodities/CommoditiesTab'
 import NewsTab from './components/news/NewsTab'
@@ -7,6 +7,7 @@ import PolymarketTab from './components/polymarket/PolymarketTab'
 import PodcastsTab from './components/podcasts/PodcastsTab'
 import LLMTab from './components/llm/LLMTab'
 import ThemesTab from './components/themes/ThemesTab'
+import PredictionsTab from './components/predictions/PredictionsTab'
 import LLMModelPicker from './components/common/LLMModelPicker'
 import LoginScreen from './components/auth/LoginScreen'
 import { signOut, useSession } from './lib/session'
@@ -18,6 +19,7 @@ const TABS = [
   { id: 'polymarket',  label: 'Polymarket',  icon: TrendingUp },
   { id: 'podcasts',    label: 'Podcasts',    icon: Mic2 },
   { id: 'themes',      label: 'Themes',      icon: Sparkles },
+  { id: 'predictions', label: 'Predictions', icon: Target },
   { id: 'llm',         label: 'LLM Analysis',icon: Bot },
 ] as const
 
@@ -106,6 +108,7 @@ export default function App() {
         {active === 'polymarket'  && <PolymarketTab />}
         {active === 'podcasts'    && <PodcastsTab />}
         {active === 'themes'      && <ThemesTab />}
+        {active === 'predictions' && <PredictionsTab />}
         {active === 'llm'         && <LLMTab />}
       </main>
     </div>

@@ -48,6 +48,11 @@ class Settings(BaseSettings):
     news_refresh_minutes: int = 15
     polymarket_refresh_minutes: int = 5
     podcast_refresh_minutes: int = 30
+    # How often the predictions job runs (score due forecasts, then generate
+    # new ones). Both models share this cadence; the horizon below is the
+    # forecast window each prediction targets.
+    prediction_refresh_minutes: int = 60
+    prediction_horizon_minutes: int = 60
     # Anthropic model used to summarize podcast episodes. Sonnet is the
     # default — it handles long French/English transcripts cleanly and costs
     # ~$0.06 per 1h episode / ~$0.15 per 3h Thinkerview.

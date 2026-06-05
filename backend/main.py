@@ -29,7 +29,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from database import init_db
-from routers import commodities, llm, news, podcasts, polymarket, themes
+from routers import commodities, llm, news, podcasts, polymarket, predictions, themes
 from scheduler import scheduler, start_scheduler
 from services.auth_service import log_auth_mode, log_provider_keys, require_user
 
@@ -142,6 +142,7 @@ app.include_router(polymarket.router, dependencies=auth_dep)
 app.include_router(llm.router, dependencies=auth_dep)
 app.include_router(themes.router, dependencies=auth_dep)
 app.include_router(podcasts.router, dependencies=auth_dep)
+app.include_router(predictions.router, dependencies=auth_dep)
 
 
 # -- SPA static mount --------------------------------------------------------

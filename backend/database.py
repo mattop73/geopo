@@ -160,7 +160,7 @@ def _sync_url_for_alembic(async_url: str) -> str:
 
 
 async def init_db():
-    from models import commodity, news, polymarket, podcast  # noqa: F401
+    from models import commodity, news, polymarket, podcast, prediction  # noqa: F401
 
     # 1) Make sure the schema exists. ``create_all`` is a no-op for tables
     #    Alembic has already created, and is required for brand-new installs
